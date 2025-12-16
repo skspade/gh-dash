@@ -83,6 +83,13 @@ func UintPtr(u uint) *uint { return &u }
 
 func IntPtr(u int) *int { return &u }
 
+func IntPtrOr(ptr *int, defaultVal int) int {
+	if ptr == nil {
+		return defaultVal
+	}
+	return *ptr
+}
+
 func ShortNumber(n int) string {
 	if n < 1000 {
 		return strconv.Itoa(n)

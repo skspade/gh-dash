@@ -63,15 +63,18 @@ func (a *ViewType) UnmarshalJSON(b []byte) error {
 		*a = IssuesView
 	case "repo":
 		*a = RepoView
+	case "actions":
+		*a = ActionsView
 	}
 
 	return nil
 }
 
 const (
-	PRsView    ViewType = "prs"
-	IssuesView ViewType = "issues"
-	RepoView   ViewType = "repo"
+	PRsView     ViewType = "prs"
+	IssuesView  ViewType = "issues"
+	RepoView    ViewType = "repo"
+	ActionsView ViewType = "actions"
 )
 
 type SectionConfig struct {
@@ -94,6 +97,21 @@ type IssuesSectionConfig struct {
 	Filters string
 	Limit   *int               `yaml:"limit,omitempty"`
 	Layout  IssuesLayoutConfig `yaml:"layout,omitempty"`
+}
+
+type ActionsSectionConfig struct {
+	Title  string   `yaml:"title"`
+	Repos  []string `yaml:"repos"`
+	Limit  *int     `yaml:"limit,omitempty"`
+	Layout ActionsLayoutConfig `yaml:"layout,omitempty"`
+}
+
+func (cfg ActionsSectionConfig) ToSectionConfig() SectionConfig {
+	return SectionConfig{
+		Title:   cfg.Title,
+		Filters: "",
+		Limit:   cfg.Limit,
+	}
 }
 
 type PreviewConfig struct {
@@ -164,6 +182,18 @@ type IssuesLayoutConfig struct {
 	Reactions   ColumnConfig `yaml:"reactions,omitempty"`
 }
 
+type ActionsLayoutConfig struct {
+	Status    ColumnConfig `yaml:"status,omitempty"`
+	Repo      ColumnConfig `yaml:"repo,omitempty"`
+	Workflow  ColumnConfig `yaml:"workflow,omitempty"`
+	Branch    ColumnConfig `yaml:"branch,omitempty"`
+	CommitSha ColumnConfig `yaml:"commitSha,omitempty"`
+	Actor     ColumnConfig `yaml:"actor,omitempty"`
+	Duration  ColumnConfig `yaml:"duration,omitempty"`
+	UpdatedAt ColumnConfig `yaml:"updatedAt,omitempty"`
+	Event     ColumnConfig `yaml:"event,omitempty"`
+}
+
 type LayoutConfig struct {
 	Prs    PrsLayoutConfig    `yaml:"prs,omitempty"`
 	Issues IssuesLayoutConfig `yaml:"issues,omitempty"`
@@ -174,6 +204,7 @@ type Defaults struct {
 	PrsLimit               int           `yaml:"prsLimit"`
 	PrApproveComment       string        `yaml:"prApproveComment,omitempty"`
 	IssuesLimit            int           `yaml:"issuesLimit"`
+	ActionsLimit           int           `yaml:"actionsLimit"`
 	View                   ViewType      `yaml:"view"`
 	Layout                 LayoutConfig  `yaml:"layout,omitempty"`
 	RefetchIntervalMinutes int           `yaml:"refetchIntervalMinutes,omitempty"`
@@ -213,6 +244,7 @@ type Keybindings struct {
 	Issues    []Keybinding `yaml:"issues,omitempty"`
 	Prs       []Keybinding `yaml:"prs,omitempty"`
 	Branches  []Keybinding `yaml:"branches,omitempty"`
+	Actions   []Keybinding `yaml:"actions,omitempty"`
 }
 
 type Pager struct {
@@ -299,17 +331,18 @@ type ThemeConfig struct {
 }
 
 type Config struct {
-	PRSections             []PrsSectionConfig    `yaml:"prSections"`
-	IssuesSections         []IssuesSectionConfig `yaml:"issuesSections"`
-	Repo                   RepoConfig            `yaml:"repo,omitempty"`
-	Defaults               Defaults              `yaml:"defaults"`
-	Keybindings            Keybindings           `yaml:"keybindings"`
-	RepoPaths              map[string]string     `yaml:"repoPaths"`
-	Theme                  *ThemeConfig          `yaml:"theme,omitempty" validate:"omitempty"`
-	Pager                  Pager                 `yaml:"pager"`
-	ConfirmQuit            bool                  `yaml:"confirmQuit"`
-	ShowAuthorIcons        bool                  `yaml:"showAuthorIcons,omitempty"`
-	SmartFilteringAtLaunch bool                  `yaml:"smartFilteringAtLaunch" default:"true"`
+	PRSections             []PrsSectionConfig     `yaml:"prSections"`
+	IssuesSections         []IssuesSectionConfig  `yaml:"issuesSections"`
+	ActionsSections        []ActionsSectionConfig `yaml:"actionsSections"`
+	Repo                   RepoConfig             `yaml:"repo,omitempty"`
+	Defaults               Defaults               `yaml:"defaults"`
+	Keybindings            Keybindings            `yaml:"keybindings"`
+	RepoPaths              map[string]string      `yaml:"repoPaths"`
+	Theme                  *ThemeConfig           `yaml:"theme,omitempty" validate:"omitempty"`
+	Pager                  Pager                  `yaml:"pager"`
+	ConfirmQuit            bool                   `yaml:"confirmQuit"`
+	ShowAuthorIcons        bool                   `yaml:"showAuthorIcons,omitempty"`
+	SmartFilteringAtLaunch bool                   `yaml:"smartFilteringAtLaunch" default:"true"`
 }
 
 type configError struct {
@@ -332,6 +365,7 @@ func (parser ConfigParser) getDefaultConfig() Config {
 			PrsLimit:               20,
 			PrApproveComment:       "LGTM",
 			IssuesLimit:            20,
+			ActionsLimit:           20,
 			View:                   PRsView,
 			RefetchIntervalMinutes: 30,
 			Layout: LayoutConfig{
@@ -418,10 +452,12 @@ func (parser ConfigParser) getDefaultConfig() Config {
 				Filters: "is:open involves:@me -author:@me",
 			},
 		},
+		ActionsSections: []ActionsSectionConfig{},
 		Keybindings: Keybindings{
 			Universal: []Keybinding{},
 			Issues:    []Keybinding{},
 			Prs:       []Keybinding{},
+			Actions:   []Keybinding{},
 		},
 		RepoPaths: map[string]string{},
 		Theme: &ThemeConfig{
@@ -581,13 +617,18 @@ func (parser ConfigParser) mergeConfigs(globalCfgPath, userProvidedCfgPath strin
 		universalKeybinds := mergeKeybindings(overrides, dest, "universal")
 		prsKeybinds := mergeKeybindings(overrides, dest, "prs")
 		issuesKeybinds := mergeKeybindings(overrides, dest, "issues")
+		actionsKeybinds := mergeKeybindings(overrides, dest, "actions")
 
 		maps.Merge(overrides, dest)
 		dest["keybindings"].(map[string]any)["universal"] = universalKeybinds
 		dest["keybindings"].(map[string]any)["prs"] = prsKeybinds
 		dest["keybindings"].(map[string]any)["issues"] = issuesKeybinds
+		dest["keybindings"].(map[string]any)["actions"] = actionsKeybinds
 		dest["prSections"] = overridesCopy["prSections"]
 		dest["issuesSections"] = overridesCopy["issuesSections"]
+		if overridesCopy["actionsSections"] != nil {
+			dest["actionsSections"] = overridesCopy["actionsSections"]
+		}
 
 		return nil
 	})); err != nil {

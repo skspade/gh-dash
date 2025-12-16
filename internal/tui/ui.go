@@ -22,6 +22,9 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
 	"github.com/dlvhdr/gh-dash/v4/internal/git"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/common"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/actionsrow"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/actionssection"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/actionsview"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/branch"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/branchsidebar"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/footer"
@@ -41,20 +44,22 @@ import (
 )
 
 type Model struct {
-	keys          *keys.KeyMap
-	sidebar       sidebar.Model
-	prView        prview.Model
-	issueSidebar  issueview.Model
-	branchSidebar branchsidebar.Model
-	currSectionId int
-	footer        footer.Model
-	repo          section.Section
-	prs           []section.Section
-	issues        []section.Section
-	tabs          tabs.Model
-	ctx           *context.ProgramContext
-	taskSpinner   spinner.Model
-	tasks         map[string]context.Task
+	keys           *keys.KeyMap
+	sidebar        sidebar.Model
+	prView         prview.Model
+	issueSidebar   issueview.Model
+	branchSidebar  branchsidebar.Model
+	actionsSidebar actionsview.Model
+	currSectionId  int
+	footer         footer.Model
+	repo           section.Section
+	prs            []section.Section
+	issues         []section.Section
+	actions        []section.Section
+	tabs           tabs.Model
+	ctx            *context.ProgramContext
+	taskSpinner    spinner.Model
+	tasks          map[string]context.Task
 }
 
 func NewModel(location config.Location) Model {
@@ -92,6 +97,7 @@ func NewModel(location config.Location) Model {
 	m.prView = prview.NewModel(m.ctx)
 	m.issueSidebar = issueview.NewModel(m.ctx)
 	m.branchSidebar = branchsidebar.NewModel(m.ctx)
+	m.actionsSidebar = actionsview.NewModel(m.ctx)
 	m.tabs = tabs.NewModel(m.ctx)
 
 	return m
@@ -143,6 +149,7 @@ func (m *Model) initScreen() tea.Msg {
 		cfg.Keybindings.Issues,
 		cfg.Keybindings.Prs,
 		cfg.Keybindings.Branches,
+		cfg.Keybindings.Actions,
 	)
 	if err != nil {
 		showError(err)
@@ -526,6 +533,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setCurrentViewSections(currSections)
 				cmds = append(cmds, m.onViewedRowChanged())
 			}
+		case m.ctx.View == config.ActionsView:
+			switch {
+			case key.Matches(msg, m.keys.OpenGithub):
+				cmds = append(cmds, m.openBrowser())
+
+			case key.Matches(msg, keys.ActionsKeys.Rerun):
+				if currRowData != nil && currSection != nil {
+					currSection.SetPromptConfirmationAction("rerun")
+					cmd = currSection.SetIsPromptConfirmationShown(true)
+				}
+				return m, cmd
+
+			case key.Matches(msg, keys.ActionsKeys.Cancel):
+				if currRowData != nil && currSection != nil {
+					currSection.SetPromptConfirmationAction("cancel")
+					cmd = currSection.SetIsPromptConfirmationShown(true)
+				}
+				return m, cmd
+
+			case key.Matches(msg, keys.ActionsKeys.ViewPRs):
+				m.ctx.View = m.switchSelectedView()
+				m.syncMainContentWidth()
+				m.setCurrSectionId(m.getCurrentViewDefaultSection())
+
+				currSections := m.getCurrentViewSections()
+				if len(currSections) == 0 {
+					newSections, fetchSectionsCmds := m.fetchAllViewSections()
+					currSections = newSections
+					cmds = append(cmds, m.tabs.SetAllLoading()...)
+					cmd = fetchSectionsCmds
+				}
+				m.setCurrentViewSections(currSections)
+				cmds = append(cmds, m.onViewedRowChanged())
+			}
 		}
 
 	case initMsg:
@@ -767,6 +808,7 @@ func (m *Model) syncProgramContext() {
 	m.prView.UpdateProgramContext(m.ctx)
 	m.issueSidebar.UpdateProgramContext(m.ctx)
 	m.branchSidebar.UpdateProgramContext(m.ctx)
+	m.actionsSidebar.UpdateProgramContext(m.ctx)
 }
 
 func (m *Model) updateSection(id int, sType string, msg tea.Msg) (cmd tea.Cmd) {
@@ -781,11 +823,17 @@ func (m *Model) updateSection(id int, sType string, msg tea.Msg) (cmd tea.Cmd) {
 	case issuessection.SectionType:
 		updatedSection, cmd = m.issues[id].Update(msg)
 		m.issues[id] = updatedSection
+	case actionssection.SectionType:
+		updatedSection, cmd = m.actions[id].Update(msg)
+		m.actions[id] = updatedSection
 	}
 
 	currSection := m.getCurrSection()
 	if currSection != nil && id == currSection.GetId() {
 		if _, ok := msg.(prssection.SectionPullRequestsFetchedMsg); ok {
+			cmd = m.onViewedRowChanged()
+		}
+		if _, ok := msg.(actionssection.SectionWorkflowRunsFetchedMsg); ok {
 			cmd = m.onViewedRowChanged()
 		}
 	}
@@ -837,6 +885,11 @@ func (m *Model) syncSidebar() tea.Cmd {
 		m.issueSidebar.SetRow(row)
 		m.issueSidebar.SetWidth(width)
 		m.sidebar.SetContent(m.issueSidebar.View())
+	case *actionsrow.Data:
+		m.actionsSidebar.SetSectionId(m.currSectionId)
+		m.actionsSidebar.SetRow(row)
+		m.actionsSidebar.SetWidth(width)
+		m.sidebar.SetContent(m.actionsSidebar.View())
 	}
 
 	return cmd
@@ -857,6 +910,10 @@ func (m *Model) fetchAllViewSections() ([]section.Section, tea.Cmd) {
 		s, prcmds := prssection.FetchAllSections(m.ctx, m.prs)
 		cmds = append(cmds, prcmds)
 		return s, tea.Batch(cmds...)
+	case config.ActionsView:
+		s, actionscmds := actionssection.FetchAllSections(m.ctx, m.actions)
+		cmds = append(cmds, actionscmds)
+		return s, tea.Batch(cmds...)
 	default:
 		s, issuecmds := issuessection.FetchAllSections(m.ctx)
 		cmds = append(cmds, issuecmds)
@@ -870,6 +927,8 @@ func (m *Model) getCurrentViewSections() []section.Section {
 		return []section.Section{m.repo}
 	case config.PRsView:
 		return m.prs
+	case config.ActionsView:
+		return m.actions
 	default:
 		return m.issues
 	}
@@ -880,6 +939,8 @@ func (m *Model) getCurrentViewDefaultSection() int {
 	case config.RepoView:
 		return 0
 	case config.PRsView:
+		return 1
+	case config.ActionsView:
 		return 1
 	default:
 		return 1
@@ -893,7 +954,8 @@ func (m *Model) setCurrentViewSections(newSections []section.Section) {
 
 	missingSearchSection := len(newSections) == 0 || (len(newSections) > 0 && newSections[0].GetId() != 0)
 	s := make([]section.Section, 0)
-	if m.ctx.View == config.PRsView {
+	switch m.ctx.View {
+	case config.PRsView:
 		if missingSearchSection {
 			search := prssection.NewModel(
 				0,
@@ -909,7 +971,23 @@ func (m *Model) setCurrentViewSections(newSections []section.Section) {
 		}
 		m.prs = append(s, newSections...)
 		newSections = m.prs
-	} else {
+	case config.ActionsView:
+		if missingSearchSection {
+			search := actionssection.NewModel(
+				0,
+				m.ctx,
+				config.ActionsSectionConfig{
+					Title: "",
+					Repos: []string{},
+				},
+				time.Now(),
+				time.Now(),
+			)
+			s = append(s, &search)
+		}
+		m.actions = append(s, newSections...)
+		newSections = m.actions
+	default:
 		if missingSearchSection {
 			search := issuessection.NewModel(
 				0,
@@ -932,21 +1010,34 @@ func (m *Model) setCurrentViewSections(newSections []section.Section) {
 
 func (m *Model) switchSelectedView() config.ViewType {
 	repoFF := config.IsFeatureEnabled(config.FF_REPO_VIEW)
+	hasActions := len(m.ctx.Config.ActionsSections) > 0
 
 	if repoFF {
-		switch true {
-		case m.ctx.View == config.RepoView:
+		switch m.ctx.View {
+		case config.RepoView:
 			return config.PRsView
-		case m.ctx.View == config.PRsView:
+		case config.PRsView:
 			return config.IssuesView
-		case m.ctx.View == config.IssuesView:
+		case config.IssuesView:
+			if hasActions {
+				return config.ActionsView
+			}
+			return config.RepoView
+		case config.ActionsView:
 			return config.RepoView
 		}
 	}
 
-	switch true {
-	case m.ctx.View == config.PRsView:
+	switch m.ctx.View {
+	case config.PRsView:
 		return config.IssuesView
+	case config.IssuesView:
+		if hasActions {
+			return config.ActionsView
+		}
+		return config.PRsView
+	case config.ActionsView:
+		return config.PRsView
 	default:
 		return config.PRsView
 	}
@@ -977,6 +1068,14 @@ func (m *Model) isUserDefinedKeybinding(msg tea.KeyMsg) bool {
 
 	if m.ctx.View == config.RepoView {
 		for _, keybinding := range m.ctx.Config.Keybindings.Branches {
+			if keybinding.Builtin == "" && keybinding.Key == msg.String() {
+				return true
+			}
+		}
+	}
+
+	if m.ctx.View == config.ActionsView {
+		for _, keybinding := range m.ctx.Config.Keybindings.Actions {
 			if keybinding.Builtin == "" && keybinding.Key == msg.String() {
 				return true
 			}
