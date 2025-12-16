@@ -64,4 +64,10 @@ const (
 
 	Logo = `▜▔▚▐▔▌▚▔▐ ▌
 ▟▁▞▐▔▌▁▚▐▔▌`
+
+	// Workflow/Actions icons
+	WorkflowRunningIcon   = ""   // Spinner/running (same as WaitingIcon)
+	WorkflowQueuedIcon    = "󰔟"  // Clock/queued
+	WorkflowCancelledIcon = ""   // Cancelled
+	WorkflowSkippedIcon   = "󰒃"  // Skipped
 )
